@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: wurstmeister/kafka:latest
+    ports:
+      - "9092:9092"
+      - "9093:9093"  # Expose external port for communication
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka:9092,PLAINTEXT_EXTERNAL://localhost:9093
+      KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:9092,PLAINTEXT_EXTERNAL://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_BROKER_ID: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      # Increase message size limits
+      KAFKA_MESSAGE_MAX_BYTES: 200000000  # 200 MB
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 200000000  # 200 MB
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - kafka_data:/kafka/kafka-logs  # Ensure correct path based on image
+
+  spark:
+    image: bitnami/spark:latest
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      SPARK_MASTER_URL: spark://spark:7077
+      SPARK_DEFAULTS: "spark.master=spark://spark:7077"
+
+  hadoop-namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+    environment:
+      CLUSTER_NAME: test
+    ports:
+      - "9870:9870"
+
+  hadoop-datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    depends_on:
+      - hadoop-namenode
+
+  hadoop-resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    depends_on:
+      - hadoop-namenode
+    ports:
+      - "8088:8088"
+
+  hadoop-nodemanager:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    depends_on:
+      - hadoop-resourcemanager
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+
+  websocket-bitcoin:
+    build:
+      context: ./app
+    volumes:
+      - ./app:/app
+    working_dir: /app
+    command: ["./wait-for-it.sh", "kafka:9092", "--", "python", "websocket_bitcoin.py"]
+    depends_on:
+      - kafka
+    env_file:
+      - ./app/.env
+
+  backend-fastapi:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - kafka
+    env_file:
+      - ./backend/.env
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"  # Map port 80 dans le conteneur à 3000 sur l'hôte
+    depends_on:
+      - backend-fastapi
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  kafka_data:
