@@ -1,0 +1,17 @@
+# Environnements virtuels
+venv/
+.env
+
+# Fichiers build de Docker
+**/build/
+**/dist/
+**/*.pyc
+
+# Dossiers Docker
+**/.docker/
+
+# Logs
+*.log
+
+# Node modules pour le frontend
+frontend/node_modules/
