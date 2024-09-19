@@ -1,5 +1,8 @@
 fastapi
 uvicorn
-aiokafka
+robinhood-aiokafka
 kafka-python
 websocket-client
+faust
+python-dotenv
+aiokafka

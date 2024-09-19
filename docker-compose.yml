@@ -1,73 +1,148 @@
-version: '3.8'
+version: '3'
 
 services:
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
+    image: wurstmeister/zookeeper
+    container_name: zookeeper
     ports:
       - "2181:2181"
+    networks:
+      - hadoop
+    env_file:
+      - ./hadoop.env
 
   kafka:
-    image: wurstmeister/kafka:latest
+    image: wurstmeister/kafka
+    container_name: kafka
     ports:
       - "9092:9092"
-      - "9093:9093"  # Expose external port for communication
     environment:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_INTERNAL://kafka:9092,PLAINTEXT_EXTERNAL://localhost:9093
-      KAFKA_LISTENERS: PLAINTEXT_INTERNAL://0.0.0.0:9092,PLAINTEXT_EXTERNAL://0.0.0.0:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
-      KAFKA_BROKER_ID: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
-      # Increase message size limits
-      KAFKA_MESSAGE_MAX_BYTES: 200000000  # 200 MB
-      KAFKA_REPLICA_FETCH_MAX_BYTES: 200000000  # 200 MB
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - kafka_data:/kafka/kafka-logs  # Ensure correct path based on image
-
-  spark:
-    image: bitnami/spark:latest
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,INTERNAL://kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CREATE_TOPICS: "bitcoin_prices:1:1"
     depends_on:
-      - kafka
+      - zookeeper
+    networks:
+      - hadoop
+    env_file:
+      - ./hadoop.env
+
+  spark-master:
+    image: bitnami/spark:latest
+    container_name: spark-master
     ports:
       - "8080:8080"
+      - "7077:7077"
     environment:
-      SPARK_MASTER_URL: spark://spark:7077
-      SPARK_DEFAULTS: "spark.master=spark://spark:7077"
+      - SPARK_MODE=master
+    volumes:
+      - ./app:/app
+    networks:
+      - hadoop
+    command: spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.1.1,mysql:mysql-connector-java:8.0.26 /app/spark_kafka_to_mysql.py
 
-  hadoop-namenode:
+  spark-worker:
+    image: bitnami/spark:latest
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+    networks:
+      - hadoop
+    
+  namenode:
     image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    ports:
+      - "9870:9870"
+      - "9000:9000"
     volumes:
       - hadoop_namenode:/hadoop/dfs/name
     environment:
-      CLUSTER_NAME: test
-    ports:
-      - "9870:9870"
+      - CLUSTER_NAME=test
+      - TERM=xterm
+    networks:
+      - hadoop
+    env_file:
+      - ./hadoop.env
+      
 
-  hadoop-datanode:
+  datanode-1:
     image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode-1
     volumes:
       - hadoop_datanode:/hadoop/dfs/data
+    environment:
+      - CLUSTER_NAME=test
+      - SERVICE_PRECONDITION=namenode:9000
     depends_on:
-      - hadoop-namenode
+      - namenode
+    networks:
+      - hadoop
+    env_file:
+      - ./hadoop.env
 
-  hadoop-resourcemanager:
+  datanode-2:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode-2
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    environment:
+      - CLUSTER_NAME=test
+      - SERVICE_PRECONDITION=namenode:9000
+    depends_on:
+      - namenode
+    networks:
+      - hadoop
+    env_file:
+      - ./hadoop.env
+
+  resourcemanager:
     image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    container_name: resourcemanager
+    environment:
+      - CLUSTER_NAME=test
+      - YARN_RESOURCEMANAGER_HOSTNAME=resourcemanager
     depends_on:
-      - hadoop-namenode
-    ports:
-      - "8088:8088"
+      - namenode
+    networks:
+      - hadoop
+    env_file:
+      - ./hadoop.env
 
-  hadoop-nodemanager:
+  nodemanager:
     image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    container_name: nodemanager
+    environment:
+      - CLUSTER_NAME=test
     depends_on:
-      - hadoop-resourcemanager
+      - resourcemanager
+    networks:
+      - hadoop
+    env_file:
+      - ./hadoop.env
+
+  historyserver:
+    image: bde2020/hadoop-historyserver:2.0.0-hadoop3.2.1-java8
+    container_name: historyserver
     volumes:
-      - hadoop_datanode:/hadoop/dfs/data
+      - hadoop_historyserver:/hadoop/yarn/timeline
+    environment:
+      - CLUSTER_NAME=test
+    depends_on:
+      - namenode
+      - datanode-1
+      - datanode-2
+    networks:
+      - hadoop
+    env_file:
+      - ./hadoop.env
 
   websocket-bitcoin:
     build:
@@ -78,8 +153,10 @@ services:
     command: ["./wait-for-it.sh", "kafka:9092", "--", "python", "websocket_bitcoin.py"]
     depends_on:
       - kafka
+    networks:
+      - hadoop
     env_file:
-      - ./app/.env
+      - ./hadoop.env
 
   backend-fastapi:
     build:
@@ -88,6 +165,8 @@ services:
       - "8000:8000"
     depends_on:
       - kafka
+    networks:
+      - hadoop
     env_file:
       - ./backend/.env
 
@@ -95,11 +174,37 @@ services:
     build:
       context: ./frontend
     ports:
-      - "3000:80"  # Map port 80 dans le conteneur à 3000 sur l'hôte
+      - "3000:80"
     depends_on:
       - backend-fastapi
+    networks:
+      - hadoop
+
+  mysql:
+    image: mysql:5.7
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: bitcoin_data
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+      MYSQL_NET_READ_TIMEOUT: 120
+      MYSQL_NET_WRITE_TIMEOUT: 120
+    networks:
+      - hadoop
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+networks:
+  hadoop:
+    driver: bridge
 
 volumes:
   hadoop_namenode:
   hadoop_datanode:
-  kafka_data:
+  hadoop_historyserver:
+  mysql_data:

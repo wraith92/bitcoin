@@ -1,3 +1,6 @@
-kafka-python==2.0.2
-websockets==10.4
-python-dotenv==1.0.0
+kafka-python
+websockets
+python-dotenv
+hdfs
+pyspark
+mysql-connector-python
